@@ -126,19 +126,44 @@ function zipStore(files){
   const end=new Uint8Array(22),v=new DataView(end.buffer);u32(v,0,0x06054b50);u16(v,8,files.length);u16(v,10,files.length);u32(v,12,centralSize);u32(v,16,offset);
   return new Blob([...parts,...central,end],{type:'application/zip'});
 }
+
+function findHeadings(text){
+  return text.split('\n').map(x=>x.trim()).filter(x=>x.length>=5&&x.length<=150&&(
+    /^(?:[1-9]\d*(?:\.\d+)*\.?)\s+\S/.test(x)||
+    /^(?:АННОТАЦИЯ|ВВЕДЕНИЕ|ОГЛАВЛЕНИЕ|ПОДГОТОВКА|ВОЗМОЖНЫЕ ОШИБКИ)\b/iu.test(x)
+  )).slice(0,25);
+}
+function makePdfChunks(record,limit){
+  const units=record.pages.map((p,i)=>({
+    page:p.number,
+    text:(i?'\n\n':'')+'===== СТРАНИЦА '+p.number+' =====\n'+p.text,
+    headings:findHeadings(p.text)
+  }));
+  const result=[];
+  for(const unit of units){
+    const segments=chunkText(unit.text,Math.max(1024,limit-8192));
+    for(let i=0;i<segments.length;i++)result.push({
+      text:segments[i],page_start:unit.page,page_end:unit.page,
+      headings:unit.headings,segment_index:i+1,segment_count:segments.length
+    });
+  }
+  if(result.map(c=>c.text).join('')!==record.text)throw Error('Контроль PDF: текст после разделения отличается от исходного извлечения');
+  return result;
+}
+
 const hex=buf=>[...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
 async function makePackage(){
   const limit=sizeLimit(),ready=records.filter(r=>r.ok);if(!ready.length)throw Error('Нет готовых документов');
   const files=[],documents=[];
   for(let i=0;i<ready.length;i++){
-    const r=ready[i],id='doc-'+String(i+1).padStart(4,'0'),chunks=chunkText(r.text,Math.max(1024,limit-4096));
+    const r=ready[i],id='doc-'+String(i+1).padStart(4,'0'),chunks=r.extension==='pdf'?makePdfChunks(r,limit):chunkText(r.text,Math.max(1024,limit-4096)).map(text=>({text,page_start:null,page_end:null,headings:[]}));
     const sha=hex(await crypto.subtle.digest('SHA-256',encoder.encode(r.text)));
     const parts=[];
     for(let j=0;j<chunks.length;j++){
       const path=id+'/part-'+String(j+1).padStart(5,'0')+'.json';
-      const payload={schema:'okto-chunk-v1',document_id:id,source_name:r.name,part_index:j+1,part_count:chunks.length,text:chunks[j]};
+      const payload={schema:'okto-chunk-v1',document_id:id,source_name:r.name,part_index:j+1,part_count:chunks.length,text:chunks[j].text,page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings,image_paths:chunks[j].page_start&&r.pages.find(p=>p.number===chunks[j].page_start)?.image?[id+'/pages/page-'+String(chunks[j].page_start).padStart(4,'0')+'.jpg']:[]};
       const content=JSON.stringify(payload);if(bytes(content)>limit)throw Error('Часть превысила лимит: '+path);
-      files.push({name:path,content});parts.push({path,index:j+1,text_bytes:bytes(chunks[j])});
+      files.push({name:path,content});parts.push({path,index:j+1,text_bytes:bytes(chunks[j].text),page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings});
     }
     let sourcePath=null;
     if(r.extension==='pdf'&&$('keepSource').checked){
@@ -159,7 +184,7 @@ async function makePackage(){
     if(pageMap?.some(p=>!Number.isInteger(p.page)))throw Error('Контроль PDF: неверная нумерация страниц');
     documents.push({document_id:id,source_name:r.name,source_type:r.extension,extraction_warning:r.warning||null,source_bytes:r.size,source_path:sourcePath,page_map:pageMap,text_bytes:bytes(r.text),text_sha256:sha,part_count:parts.length,parts});
   }
-  const manifest={schema:'okto-package-v1',created_at:new Date().toISOString(),encoding:'UTF-8',split_strategy:'line-preferred-exact-text',pdf_pages:'page markers in text and page_map metadata',documents};
+  const manifest={schema:'okto-package-v1',created_at:new Date().toISOString(),encoding:'UTF-8',split_strategy:'pdf-page-boundaries-with-line-fallback; other-formats-line-preferred',pdf_pages:'page markers, chunk page metadata, image_paths, page_map',documents};
   for(const doc of documents){
     for(const p of doc.page_map||[]){
       if(p.image_path&&!files.some(f=>f.name===p.image_path))throw Error('Изображение отсутствует в ZIP: '+p.image_path);
