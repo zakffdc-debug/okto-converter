@@ -60,18 +60,29 @@ async function extractDocument(file,extension){
     const pages=[];let empty=0;
     for(let i=1;i<=doc.numPages;i++){
       const page=await doc.getPage(i),content=await page.getTextContent(),items=content.items.filter(item=>typeof item.str==='string');
-      let lines=[],line=[],lastY=null;
-      for(const item of items){const y=Math.round(item.transform?.[5]||0);
-        if(lastY!==null&&Math.abs(y-lastY)>3){lines.push(line.join(' '));line=[]}
-        if(item.str)line.push(item.str);lastY=y;
+      // PDF.js often splits words into adjacent fragments. Add spaces only for visible gaps.
+      const lines=[];let line=[],lastY=null,lastRight=null,lastSize=0;
+      const flush=()=>{if(line.length){lines.push(line.join(''));line=[]}lastRight=null};
+      for(const item of items){
+        const x=item.transform?.[4]??0,y=item.transform?.[5]??0;
+        const fontSize=Math.max(1,Math.hypot(item.transform?.[2]||0,item.transform?.[3]||0));
+        if(lastY!==null&&Math.abs(y-lastY)>Math.max(2,fontSize*.38))flush();
+        if(line.length&&lastRight!==null){
+          const gap=x-lastRight;
+          if(gap>Math.max(1.5,Math.min(lastSize,fontSize)*.22)&&!/\s$/.test(line[line.length-1])&&!/^\s/.test(item.str))line.push(' ');
+        }
+        line.push(item.str);
+        lastRight=x+(item.width||0);lastY=y;lastSize=fontSize;
+        if(item.hasEOL){flush();lastY=null}
       }
-      if(line.length)lines.push(line.join(' '));
+      flush();
       const text=lines.join('\n');if(!text.trim())empty++;
-      pages.push('===== СТРАНИЦА '+i+' =====\n'+text);
+      pages.push({page:i,text});
       page.cleanup();
     }
     await doc.destroy();
-    return {text:pages.join('\n\n'),warning:'PDF: извлечён только текстовый слой; пустых страниц: '+empty+'. OCR, изображения и восстановление таблиц по координатам пока отсутствуют.'};
+    const text=pages.map(p=>'===== СТРАНИЦА '+p.page+' =====\n'+p.text).join('\n\n');
+    return {text,pages,warning:'PDF: текстовый слой; пустых страниц: '+empty+'. Оригинал можно вложить в ZIP. OCR и распознавание таблиц/изображений пока отсутствуют.'};
   }
   const text=new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer());
   if(extension==='json')JSON.parse(text);
@@ -81,13 +92,13 @@ async function extractDocument(file,extension){
 function render(){list.replaceChildren();exportBtn.disabled=!records.some(r=>r.ok);if(!records.length){notice.textContent='Добавьте документы для обработки.';return}
 notice.textContent=records.filter(r=>r.ok).length+' из '+records.length+' документов готовы.';
 for(const r of records){const div=document.createElement('div');div.className='item';const info=document.createElement('div'),name=document.createElement('strong'),sub=document.createElement('small');name.textContent=r.name;sub.textContent=r.ok?'Готово · '+bytes(r.text)+' байт UTF-8'+(r.warning?' · '+r.warning:''):'Ошибка: '+r.error;info.append(name,sub);div.append(info);if(r.ok){const b=document.createElement('button');b.textContent='Просмотр';b.onclick=()=>preview.textContent=r.text.slice(0,20000)+(r.text.length>20000?'\n…':'');div.append(b)}list.append(div)}}
-async function add(files){for(const file of files){const r={name:file.name,size:file.size,extension:ext(file.name),ok:false,error:'',text:''};records.push(r);render();try{if(!supported.has(r.extension))throw Error('формат пока не поддерживается');const extracted=await extractDocument(file,r.extension);if(!extracted.text.trim())throw Error('не удалось извлечь текст');r.text=extracted.text;r.warning=extracted.warning;r.ok=true}catch(e){r.error=e.message||String(e)}render()}}
+async function add(files){for(const file of files){const r={name:file.name,size:file.size,extension:ext(file.name),ok:false,error:'',text:''};records.push(r);render();try{if(!supported.has(r.extension))throw Error('формат пока не поддерживается');const extracted=await extractDocument(file,r.extension);if(!extracted.text.trim())throw Error('не удалось извлечь текст');r.text=extracted.text;r.pages=extracted.pages||null;r.sourceFile=file;r.warning=extracted.warning;r.ok=true}catch(e){r.error=e.message||String(e)}render()}}
 function crc32(data){let crc=-1;for(const b of data){crc^=b;for(let k=0;k<8;k++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}return (crc^-1)>>>0}
 const u16=(view,pos,value)=>view.setUint16(pos,value,true),u32=(view,pos,value)=>view.setUint32(pos,value>>>0,true);
 function zipStore(files){
   // ZIP STORE, no compression; avoids external libraries and network dependencies.
   const parts=[],central=[];let offset=0;
-  for(const f of files){const name=encoder.encode(f.name),data=encoder.encode(f.content),crc=crc32(data);
+  for(const f of files){const name=encoder.encode(f.name),data=f.content instanceof Uint8Array?f.content:encoder.encode(f.content),crc=crc32(data);
     if(name.length>65535||data.length>0xffffffff)throw Error('Слишком большой элемент ZIP');
     const lh=new Uint8Array(30+name.length),lv=new DataView(lh.buffer);
     u32(lv,0,0x04034b50);u16(lv,4,20);u16(lv,6,0x0800);u16(lv,8,0);u32(lv,14,crc);u32(lv,18,data.length);u32(lv,22,data.length);u16(lv,26,name.length);lh.set(name,30);
@@ -116,9 +127,15 @@ async function makePackage(){
       const content=JSON.stringify(payload);if(bytes(content)>limit)throw Error('Часть превысила лимит: '+path);
       files.push({name:path,content});parts.push({path,index:j+1,text_bytes:bytes(chunks[j])});
     }
-    documents.push({document_id:id,source_name:r.name,source_type:r.extension,extraction_warning:r.warning||null,source_bytes:r.size,text_bytes:bytes(r.text),text_sha256:sha,part_count:parts.length,parts});
+    let sourcePath=null;
+    if(r.extension==='pdf'&&$('keepSource').checked){
+      sourcePath=id+'/source.pdf';
+      files.push({name:sourcePath,content:new Uint8Array(await r.sourceFile.arrayBuffer())});
+    }
+    const pageMap=r.pages?r.pages.map(p=>({page:p.page,marker:'===== СТРАНИЦА '+p.page+' =====',text_bytes:bytes(p.text)})):null;
+    documents.push({document_id:id,source_name:r.name,source_type:r.extension,extraction_warning:r.warning||null,source_bytes:r.size,source_path:sourcePath,page_map:pageMap,text_bytes:bytes(r.text),text_sha256:sha,part_count:parts.length,parts});
   }
-  const manifest={schema:'okto-package-v1',created_at:new Date().toISOString(),encoding:'UTF-8',split_strategy:'line-preferred-exact-text',documents};
+  const manifest={schema:'okto-package-v1',created_at:new Date().toISOString(),encoding:'UTF-8',split_strategy:'line-preferred-exact-text',pdf_pages:'page markers in text and page_map metadata',documents};
   files.unshift({name:'manifest.json',content:JSON.stringify(manifest,null,2)});
   return {blob:zipStore(files),parts:files.length-1};
 }
