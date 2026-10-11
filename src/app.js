@@ -111,7 +111,7 @@ const u16=(view,pos,value)=>view.setUint16(pos,value,true),u32=(view,pos,value)=
 function zipStore(files){
   // ZIP STORE, no compression; avoids external libraries and network dependencies.
   const parts=[],central=[];let offset=0;
-  for(const f of files){const name=encoder.encode(f.name),data=f.content instanceof Uint8Array?f.content:encoder.encode(f.content),crc=crc32(data);
+  for(const f of files){const name=encoder.encode(f.name),data=f.data instanceof Uint8Array?f.data:(f.content instanceof Uint8Array?f.content:encoder.encode(f.content)),crc=crc32(data);
     if(name.length>65535||data.length>0xffffffff)throw Error('Слишком большой элемент ZIP');
     const lh=new Uint8Array(30+name.length),lv=new DataView(lh.buffer);
     u32(lv,0,0x04034b50);u16(lv,4,20);u16(lv,6,0x0800);u16(lv,8,0);u32(lv,14,crc);u32(lv,18,data.length);u32(lv,22,data.length);u16(lv,26,name.length);lh.set(name,30);
@@ -145,7 +145,12 @@ async function makePackage(){
       sourcePath=id+'/source.pdf';
       files.push({name:sourcePath,content:new Uint8Array(await r.sourceFile.arrayBuffer())});
     }
-    const pageMap=r.pages?r.pages.map(p=>({page:p.page,marker:'===== СТРАНИЦА '+p.page+' =====',text_bytes:bytes(p.text)})):null;
+    const pageMap=r.pages?r.pages.map(p=>{
+      const pageNumber=p.number??p.page;
+      const imagePath=p.image?id+'/pages/page-'+String(pageNumber).padStart(4,'0')+'.jpg':null;
+      if(p.image)files.push({name:imagePath,data:p.image});
+      return {page:pageNumber,marker:'===== СТРАНИЦА '+pageNumber+' =====',text_bytes:bytes(p.text),image_path:imagePath,has_text:!!p.text.trim()};
+    }):null;
     documents.push({document_id:id,source_name:r.name,source_type:r.extension,extraction_warning:r.warning||null,source_bytes:r.size,source_path:sourcePath,page_map:pageMap,text_bytes:bytes(r.text),text_sha256:sha,part_count:parts.length,parts});
   }
   const manifest={schema:'okto-package-v1',created_at:new Date().toISOString(),encoding:'UTF-8',split_strategy:'line-preferred-exact-text',pdf_pages:'page markers in text and page_map metadata',documents};
