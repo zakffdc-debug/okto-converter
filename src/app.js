@@ -58,31 +58,44 @@ async function extractDocument(file,extension){
     pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
     const doc=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
     const pages=[];let empty=0;
-    for(let i=1;i<=doc.numPages;i++){
-      const page=await doc.getPage(i),content=await page.getTextContent(),items=content.items.filter(item=>typeof item.str==='string');
-      // PDF.js often splits words into adjacent fragments. Add spaces only for visible gaps.
-      const lines=[];let line=[],lastY=null,lastRight=null,lastSize=0;
-      const flush=()=>{if(line.length){lines.push(line.join(''));line=[]}lastRight=null};
-      for(const item of items){
-        const x=item.transform?.[4]??0,y=item.transform?.[5]??0;
-        const fontSize=Math.max(1,Math.hypot(item.transform?.[2]||0,item.transform?.[3]||0));
-        if(lastY!==null&&Math.abs(y-lastY)>Math.max(2,fontSize*.38))flush();
-        if(line.length&&lastRight!==null){
-          const gap=x-lastRight;
-          if(gap>Math.max(1.5,Math.min(lastSize,fontSize)*.22)&&!/\s$/.test(line[line.length-1])&&!/^\s/.test(item.str))line.push(' ');
+    const includeImages=$('pageImages').checked;
+    try{
+      for(let i=1;i<=doc.numPages;i++){
+        const page=await doc.getPage(i),content=await page.getTextContent();
+        // PDF.js item.hasEOL and measured gaps are more reliable than inserting
+        // a space between every PDF text run (which breaks words).
+        const lines=[];let line='',last=null;
+        for(const item of content.items){
+          if(typeof item.str!=='string')continue;
+          const x=item.transform?.[4]||0,y=item.transform?.[5]||0;
+          if(last&&Math.abs(y-last.y)>3){lines.push(line);line='';last=null}
+          if(last&&item.str){
+            const gap=x-last.end;
+            const fontSize=Math.max(1,Math.abs(item.transform?.[0]||item.height||10));
+            if(gap>Math.max(1.5,fontSize*0.23)&&!/\s$/.test(line)&&!/^\s/.test(item.str))line+=' ';
+          }
+          line+=item.str;
+          last={y,end:x+(item.width||0)};
+          if(item.hasEOL){lines.push(line);line='';last=null}
         }
-        line.push(item.str);
-        lastRight=x+(item.width||0);lastY=y;lastSize=fontSize;
-        if(item.hasEOL){flush();lastY=null}
+        if(line)lines.push(line);
+        const text=lines.join('\n');
+        if(!text.trim())empty++;
+        const p={number:i,text};
+        if(includeImages){
+          const viewport=page.getViewport({scale:1});
+          const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+          const ctx=canvas.getContext('2d',{alpha:false});
+          await page.render({canvasContext:ctx,viewport}).promise;
+          const blob=await new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(Error('Не удалось создать изображение страницы '+i)),'image/jpeg',0.78));
+          p.image=new Uint8Array(await blob.arrayBuffer());
+          canvas.width=0;canvas.height=0;
+        }
+        pages.push(p);
+        page.cleanup();
       }
-      flush();
-      const text=lines.join('\n');if(!text.trim())empty++;
-      pages.push({page:i,text});
-      page.cleanup();
-    }
-    await doc.destroy();
-    const text=pages.map(p=>'===== СТРАНИЦА '+p.page+' =====\n'+p.text).join('\n\n');
-    return {text,pages,warning:'PDF: текстовый слой; пустых страниц: '+empty+'. Оригинал можно вложить в ZIP. OCR и распознавание таблиц/изображений пока отсутствуют.'};
+    }finally{await doc.destroy()}
+    return {text:pages.map(p=>'===== СТРАНИЦА '+p.number+' =====\n'+p.text).join('\n\n'),pages,warning:'PDF: '+pages.length+' страниц, '+empty+' без текстового слоя. '+(includeImages?'Снимки страниц включены.':'Снимки страниц отключены.')+' OCR и распознавание таблиц пока отсутствуют.'};
   }
   const text=new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer());
   if(extension==='json')JSON.parse(text);
