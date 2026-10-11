@@ -151,9 +151,20 @@ async function makePackage(){
       if(p.image)files.push({name:imagePath,data:p.image});
       return {page:pageNumber,marker:'===== СТРАНИЦА '+pageNumber+' =====',text_bytes:bytes(p.text),image_path:imagePath,has_text:!!p.text.trim()};
     }):null;
+    if(r.extension==='pdf'&&$('pageImages').checked){
+      const expected=r.pages?.length||0;
+      const actual=pageMap?.filter(p=>p.image_path).length||0;
+      if(!expected||actual!==expected)throw Error('Контроль PDF: снимки страниц отсутствуют ('+actual+' из '+expected+'). Перезагрузите страницу и повторите обработку.');
+    }
+    if(pageMap?.some(p=>!Number.isInteger(p.page)))throw Error('Контроль PDF: неверная нумерация страниц');
     documents.push({document_id:id,source_name:r.name,source_type:r.extension,extraction_warning:r.warning||null,source_bytes:r.size,source_path:sourcePath,page_map:pageMap,text_bytes:bytes(r.text),text_sha256:sha,part_count:parts.length,parts});
   }
   const manifest={schema:'okto-package-v1',created_at:new Date().toISOString(),encoding:'UTF-8',split_strategy:'line-preferred-exact-text',pdf_pages:'page markers in text and page_map metadata',documents};
+  for(const doc of documents){
+    for(const p of doc.page_map||[]){
+      if(p.image_path&&!files.some(f=>f.name===p.image_path))throw Error('Изображение отсутствует в ZIP: '+p.image_path);
+    }
+  }
   files.unshift({name:'manifest.json',content:JSON.stringify(manifest,null,2)});
   return {blob:zipStore(files),parts:files.length-1};
 }
