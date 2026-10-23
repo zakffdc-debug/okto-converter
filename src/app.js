@@ -1,5 +1,8 @@
 const $=id=>document.getElementById(id);
 const input=$('files'),drop=$('drop'),list=$('list'),preview=$('preview'),notice=$('notice'),exportBtn=$('export');
+let processing=false;
+function showProgress(percent,label){const area=$('progressArea'),bar=$('progressTrack');area.hidden=false;const n=Math.max(0,Math.min(100,Math.round(percent)));$('progressFill').style.width=n+'%';bar.setAttribute('aria-valuenow',String(n));$('progressText').textContent=label+' — '+n+'%';}
+function hideProgress(){ $('progressArea').hidden=true; }
 const encoder=new TextEncoder(),supported=new Set(['txt','md','markdown','csv','json','pdf','docx','xlsx']),records=[];
 const ext=name=>(name.split('.').pop()||'').toLowerCase();
 const bytes=text=>encoder.encode(text).length;
@@ -28,7 +31,7 @@ function loadScript(url,globalName){
   }));
   return loadedScripts.get(url);
 }
-async function extractDocument(file,extension){
+async function extractDocument(file,extension,progress=()=>{}){
   if(extension==='docx'){
     const mammoth=await loadScript('https://cdn.jsdelivr.net/npm/mammoth@1.9.0/mammoth.browser.min.js','mammoth');
     const result=await mammoth.convertToHtml({arrayBuffer:await file.arrayBuffer()});
@@ -93,6 +96,8 @@ async function extractDocument(file,extension){
         }
         pages.push(p);
         page.cleanup();
+        progress(Math.round(i/doc.numPages*100),'PDF: обработка страницы '+i+' из '+doc.numPages);
+        if(i%3===0)await new Promise(resolve=>setTimeout(resolve,0));
       }
     }finally{await doc.destroy()}
     return {text:pages.map(p=>'===== СТРАНИЦА '+p.number+' =====\n'+p.text).join('\n\n'),pages,warning:'PDF: '+pages.length+' страниц, '+empty+' без текстового слоя. '+(includeImages?'Снимки страниц включены.':'Снимки страниц отключены.')+' OCR и распознавание таблиц пока отсутствуют.'};
@@ -102,10 +107,34 @@ async function extractDocument(file,extension){
   return {text,warning:''};
 }
 
-function render(){list.replaceChildren();exportBtn.disabled=!records.some(r=>r.ok);if(!records.length){notice.textContent='Добавьте документы для обработки.';return}
+function render(){list.replaceChildren();exportBtn.disabled=processing||!records.some(r=>r.ok);if(!records.length){notice.textContent='Добавьте документы для обработки.';return}
 notice.textContent=records.filter(r=>r.ok).length+' из '+records.length+' документов готовы.';
 for(const r of records){const div=document.createElement('div');div.className='item';const info=document.createElement('div'),name=document.createElement('strong'),sub=document.createElement('small');name.textContent=r.name;sub.textContent=r.ok?'Готово · '+bytes(r.text)+' байт UTF-8'+(r.warning?' · '+r.warning:''):'Ошибка: '+r.error;info.append(name,sub);div.append(info);if(r.ok){const b=document.createElement('button');b.textContent='Просмотр';b.onclick=()=>preview.textContent=r.text.slice(0,20000)+(r.text.length>20000?'\n…':'');div.append(b)}list.append(div)}}
-async function add(files){for(const file of files){const r={name:file.name,size:file.size,extension:ext(file.name),ok:false,error:'',text:''};records.push(r);render();try{if(!supported.has(r.extension))throw Error('формат пока не поддерживается');const extracted=await extractDocument(file,r.extension);if(!extracted.text.trim())throw Error('не удалось извлечь текст');r.text=extracted.text;r.pages=extracted.pages||null;r.sourceFile=file;r.warning=extracted.warning;r.ok=true}catch(e){r.error=e.message||String(e)}render()}}
+async function add(files){
+  if(processing)return;
+  processing=true;render();
+  try{
+    for(let k=0;k<files.length;k++){
+      const file=files[k],r={name:file.name,size:file.size,extension:ext(file.name),ok:false,error:'',text:''};
+      records.push(r);render();
+      const label='Файл '+(k+1)+' из '+files.length+': '+file.name;
+      showProgress(0,label+' — подготовка');
+      try{
+        if(!supported.has(r.extension))throw Error('формат пока не поддерживается');
+        // File reading and parsing are local. For PDF, progress tracks completed pages;
+        // other formats report phases rather than an invented byte-by-byte percentage.
+        showProgress(5,label+' — чтение');
+        const extracted=await extractDocument(file,r.extension,(p,stage)=>showProgress(5+p*0.94,label+' — '+stage));
+        if(!extracted.text.trim())throw Error('не удалось извлечь текст');
+        r.text=extracted.text;r.pages=extracted.pages||null;r.sourceFile=file;r.warning=extracted.warning;r.ok=true;
+        showProgress(100,label+' — готово');
+      }catch(e){r.error=e.message||String(e);showProgress(100,label+' — ошибка')}
+      render();
+      await new Promise(resolve=>setTimeout(resolve,0));
+    }
+  }finally{processing=false;render();hideProgress()}
+}
+
 function crc32(data){let crc=-1;for(const b of data){crc^=b;for(let k=0;k<8;k++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}return (crc^-1)>>>0}
 const u16=(view,pos,value)=>view.setUint16(pos,value,true),u32=(view,pos,value)=>view.setUint32(pos,value>>>0,true);
 function zipStore(files){
@@ -197,6 +226,6 @@ drop.onclick=()=>input.click();drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' 
 input.onchange=()=>{add([...input.files]);input.value=''};
 drop.ondragover=e=>{e.preventDefault();drop.classList.add('over')};drop.ondragleave=()=>drop.classList.remove('over');
 drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over');add([...e.dataTransfer.files])};
-$('clear').onclick=()=>{records.length=0;preview.textContent='Выберите документ.';render()};
+$('clear').onclick=()=>{if(processing)return;records.length=0;preview.textContent='Выберите документ.';render()};
 exportBtn.onclick=async()=>{exportBtn.disabled=true;notice.textContent='Формируем ZIP…';try{const {blob,parts}=await makePackage();download('okto-package-'+new Date().toISOString().slice(0,10)+'.zip',blob);notice.textContent='ZIP сформирован: '+parts+' частей. Импорт в бот пока не реализован.'}catch(e){notice.textContent='Ошибка экспорта: '+(e.message||String(e))}finally{exportBtn.disabled=false}};
 render();
