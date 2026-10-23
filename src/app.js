@@ -210,28 +210,29 @@ function makePdfChunks(record,limit){
 }
 
 const hex=buf=>[...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+function safeDocumentStem(name){return (name.replace(/\.[^.]+$/,'').normalize('NFC').replace(/[\\/<>:"|?*\x00-\x1f]/g,'_').replace(/\s+/g,' ').replace(/^\.+|\.+$/g,'').trim().slice(0,100)||'Документ')}
 async function makePackage(){
   const limit=sizeLimit(),ready=records.filter(r=>r.ok);if(!ready.length)throw Error('Нет готовых документов');
   const files=[],documents=[],qualityReports=[];
   for(let i=0;i<ready.length;i++){
-    const r=ready[i],id='doc-'+String(i+1).padStart(4,'0'),chunks=r.extension==='pdf'?makePdfChunks(r,limit):chunkText(r.text,Math.max(1024,limit-4096)).map(text=>({text,page_start:null,page_end:null,headings:[]}));
+    const r=ready[i],id='doc-'+String(i+1).padStart(4,'0'),stem=safeDocumentStem(r.name),folder=id+'_'+stem,chunks=r.extension==='pdf'?makePdfChunks(r,limit):chunkText(r.text,Math.max(1024,limit-4096)).map(text=>({text,page_start:null,page_end:null,headings:[]}));
     const sha=hex(await crypto.subtle.digest('SHA-256',encoder.encode(r.text)));
     qualityReports.push({document_id:id,source_name:r.name,...r.quality});
     const parts=[];
     for(let j=0;j<chunks.length;j++){
-      const path=id+'/part-'+String(j+1).padStart(5,'0')+'.json';
-      const payload={schema:'okto-chunk-v1',document_id:id,source_name:r.name,part_index:j+1,part_count:chunks.length,text:chunks[j].text,page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings,image_paths:chunks[j].page_start&&r.pages.find(p=>p.number===chunks[j].page_start)?.image?[id+'/pages/page-'+String(chunks[j].page_start).padStart(4,'0')+'.jpg']:[]};
+      const path=folder+'/'+stem+'_часть_'+String(j+1).padStart(4,'0')+'.json';
+      const payload={schema:'okto-chunk-v1',document_id:id,source_name:r.name,part_index:j+1,part_count:chunks.length,text:chunks[j].text,page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings,image_paths:chunks[j].page_start&&r.pages.find(p=>p.number===chunks[j].page_start)?.image?[folder+'/pages/page-'+String(chunks[j].page_start).padStart(4,'0')+'.jpg']:[]};
       const content=JSON.stringify(payload);if(bytes(content)>limit)throw Error('Часть превысила лимит: '+path);
       files.push({name:path,content});parts.push({path,index:j+1,text_bytes:bytes(chunks[j].text),page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings});
     }
     let sourcePath=null;
     if(r.extension==='pdf'&&$('keepSource').checked){
-      sourcePath=id+'/source.pdf';
+      sourcePath=folder+'/source.pdf';
       files.push({name:sourcePath,content:new Uint8Array(await r.sourceFile.arrayBuffer())});
     }
     const pageMap=r.pages?r.pages.map(p=>{
       const pageNumber=p.number??p.page;
-      const imagePath=p.image?id+'/pages/page-'+String(pageNumber).padStart(4,'0')+'.jpg':null;
+      const imagePath=p.image?folder+'/pages/page-'+String(pageNumber).padStart(4,'0')+'.jpg':null;
       if(p.image)files.push({name:imagePath,data:p.image});
       return {page:pageNumber,marker:'===== СТРАНИЦА '+pageNumber+' =====',text_bytes:bytes(p.text),image_path:imagePath,has_text:!!p.text.trim()};
     }):null;
@@ -252,12 +253,12 @@ async function makePackage(){
   manifest.quality_report_path='quality-report.json';
   files.unshift({name:'quality-report.json',content:JSON.stringify({schema:'okto-quality-v1',documents:qualityReports},null,2)});
   files.unshift({name:'manifest.json',content:JSON.stringify(manifest,null,2)});
-  return {blob:zipStore(files),parts:files.length-1};
+  return {blob:zipStore(files),parts:files.length-1,archiveName:ready.length===1?safeDocumentStem(ready[0].name)+'_разбитый.zip':'OKTO_документы_разбитые.zip'};
 }
 drop.onclick=()=>input.click();drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();input.click()}};
 input.onchange=()=>{add([...input.files]);input.value=''};
 drop.ondragover=e=>{e.preventDefault();drop.classList.add('over')};drop.ondragleave=()=>drop.classList.remove('over');
 drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over');add([...e.dataTransfer.files])};
 $('clear').onclick=()=>{if(processing)return;records.length=0;hideProgress();preview.textContent='Выберите документ.';render()};
-exportBtn.onclick=async()=>{exportBtn.disabled=true;notice.textContent='Формируем ZIP…';showProgress(0,'Упаковка файлов в ZIP');await new Promise(resolve=>setTimeout(resolve,30));try{const {blob,parts}=await makePackage();showProgress(100,'ZIP сформирован');download('okto-package-'+new Date().toISOString().slice(0,10)+'.zip',blob);notice.textContent='ZIP сформирован: '+parts+' частей. Импорт в бот пока не реализован.'}catch(e){notice.textContent='Ошибка экспорта: '+(e.message||String(e));showProgress(100,'Ошибка упаковки ZIP')}finally{exportBtn.disabled=false}};
+exportBtn.onclick=async()=>{exportBtn.disabled=true;notice.textContent='Формируем ZIP…';showProgress(0,'Упаковка файлов в ZIP');await new Promise(resolve=>setTimeout(resolve,30));try{const {blob,parts,archiveName}=await makePackage();showProgress(100,'ZIP сформирован');download(archiveName,blob);notice.textContent='ZIP сформирован: '+parts+' частей. Импорт в бот пока не реализован.'}catch(e){notice.textContent='Ошибка экспорта: '+(e.message||String(e));showProgress(100,'Ошибка упаковки ZIP')}finally{exportBtn.disabled=false}};
 render();
