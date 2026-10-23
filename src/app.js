@@ -128,7 +128,7 @@ function assessQuality(r){
 
 function render(){list.replaceChildren();exportBtn.disabled=processing||!records.some(r=>r.ok);if(!records.length){notice.textContent='Добавьте документы для обработки.';return}
 notice.textContent=records.filter(r=>r.ok).length+' из '+records.length+' документов готовы.';
-for(const r of records){const div=document.createElement('div');div.className='item';const info=document.createElement('div'),name=document.createElement('strong'),sub=document.createElement('small');name.textContent=r.name;sub.textContent=r.ok?'Готово · '+bytes(r.text)+' байт UTF-8'+(r.warning?' · '+r.warning:''):'Ошибка: '+r.error;info.append(name,sub);div.append(info);if(r.ok){const quality=document.createElement('small');quality.textContent='Контроль качества: '+(r.quality.status==='ok'?'без замечаний':r.quality.findings.map(f=>f.message).join(' · '));info.append(quality);const b=document.createElement('button');b.textContent='Просмотр';b.onclick=()=>preview.textContent=r.text.slice(0,20000)+(r.text.length>20000?'\n…':'');div.append(b)}list.append(div)}}
+for(const r of records){const div=document.createElement('div');div.className='item';const info=document.createElement('div'),name=document.createElement('strong'),sub=document.createElement('small');name.textContent=r.name;sub.textContent=r.ok?'Готово · '+bytes(r.text)+' байт UTF-8'+(r.warning?' · '+r.warning:''):processing&&!r.error?'Обрабатывается…':'Ошибка: '+r.error;info.append(name,sub);div.append(info);if(r.ok){const quality=document.createElement('small');quality.textContent='Контроль качества: '+(r.quality.status==='ok'?'без замечаний':r.quality.findings.map(f=>f.message).join(' · '));info.append(quality);const b=document.createElement('button');b.textContent='Просмотр';b.onclick=()=>preview.textContent=r.text.slice(0,20000)+(r.text.length>20000?'\n…':'');div.append(b)}list.append(div)}}
 async function add(files){
   if(processing)return;
   processing=true;render();
@@ -155,7 +155,8 @@ async function add(files){
   }finally{processing=false;render();/* Keep the final 100% or error status visible until next upload or clear. */}
 }
 
-function crc32(data){let crc=-1;for(const b of data){crc^=b;for(let k=0;k<8;k++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}return (crc^-1)>>>0}
+const crcTable=Uint32Array.from({length:256},(_,i)=>{let c=i;for(let k=0;k<8;k++)c=(c>>>1)^((c&1)?0xedb88320:0);return c>>>0});
+function crc32(data){let crc=0xffffffff;for(let i=0;i<data.length;i++)crc=crcTable[(crc^data[i])&255]^(crc>>>8);return (crc^0xffffffff)>>>0}
 const u16=(view,pos,value)=>view.setUint16(pos,value,true),u32=(view,pos,value)=>view.setUint32(pos,value>>>0,true);
 function zipStore(files){
   // ZIP STORE, no compression; avoids external libraries and network dependencies.
