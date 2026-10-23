@@ -132,7 +132,7 @@ async function add(files){
       render();
       await new Promise(resolve=>setTimeout(resolve,0));
     }
-  }finally{processing=false;render();hideProgress()}
+  }finally{processing=false;render();if(!files.length)hideProgress()}
 }
 
 function crc32(data){let crc=-1;for(const b of data){crc^=b;for(let k=0;k<8;k++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}return (crc^-1)>>>0}
