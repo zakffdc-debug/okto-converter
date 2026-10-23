@@ -210,7 +210,11 @@ function makePdfChunks(record,limit){
 }
 
 const hex=buf=>[...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
-function safeDocumentStem(name){return (name.replace(/\.[^.]+$/,'').normalize('NFC').replace(/[\\/<>:"|?*\x00-\x1f]/g,'_').replace(/\s+/g,' ').replace(/^\.+|\.+$/g,'').trim().slice(0,100)||'Документ')}
+function safeDocumentStem(name){
+  const map={а:'a',б:'b',в:'v',г:'g',д:'d',е:'e',ё:'e',ж:'zh',з:'z',и:'i',й:'y',к:'k',л:'l',м:'m',н:'n',о:'o',п:'p',р:'r',с:'s',т:'t',у:'u',ф:'f',х:'kh',ц:'ts',ч:'ch',ш:'sh',щ:'sch',ъ:'',ы:'y',ь:'',э:'e',ю:'yu',я:'ya'};
+  const stem=name.replace(/\.[^.]+$/,'').normalize('NFKD').toLowerCase();
+  return (Array.from(stem,c=>map[c]??c).join('').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_-]+/g,'_').replace(/_+/g,'_').replace(/^[_-]+|[_-]+$/g,'').slice(0,90)||'document');
+}
 async function makePackage(){
   const limit=sizeLimit(),ready=records.filter(r=>r.ok);if(!ready.length)throw Error('Нет готовых документов');
   const files=[],documents=[],qualityReports=[];
@@ -220,7 +224,7 @@ async function makePackage(){
     qualityReports.push({document_id:id,source_name:r.name,...r.quality});
     const parts=[];
     for(let j=0;j<chunks.length;j++){
-      const path=folder+'/'+stem+'_часть_'+String(j+1).padStart(4,'0')+'.json';
+      const path=folder+'/'+stem+'_part_'+String(j+1).padStart(4,'0')+'.json';
       const payload={schema:'okto-chunk-v1',document_id:id,source_name:r.name,part_index:j+1,part_count:chunks.length,text:chunks[j].text,page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings,image_paths:chunks[j].page_start&&r.pages.find(p=>p.number===chunks[j].page_start)?.image?[folder+'/pages/page-'+String(chunks[j].page_start).padStart(4,'0')+'.jpg']:[]};
       const content=JSON.stringify(payload);if(bytes(content)>limit)throw Error('Часть превысила лимит: '+path);
       files.push({name:path,content});parts.push({path,index:j+1,text_bytes:bytes(chunks[j].text),page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings});
@@ -253,7 +257,7 @@ async function makePackage(){
   manifest.quality_report_path='quality-report.json';
   files.unshift({name:'quality-report.json',content:JSON.stringify({schema:'okto-quality-v1',documents:qualityReports},null,2)});
   files.unshift({name:'manifest.json',content:JSON.stringify(manifest,null,2)});
-  return {blob:zipStore(files),parts:files.length-1,archiveName:ready.length===1?safeDocumentStem(ready[0].name)+'_разбитый.zip':'OKTO_документы_разбитые.zip'};
+  return {blob:zipStore(files),parts:files.length-1,archiveName:ready.length===1?safeDocumentStem(ready[0].name)+'_split.zip':'OKTO_documents_split.zip'};
 }
 drop.onclick=()=>input.click();drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();input.click()}};
 input.onchange=()=>{add([...input.files]);input.value=''};
