@@ -107,9 +107,28 @@ async function extractDocument(file,extension,progress=()=>{}){
   return {text,warning:''};
 }
 
+
+function assessQuality(r){
+  const findings=[],pages=r.pages||[];
+  const add=(severity,code,message,page=null)=>findings.push({severity,code,message,page});
+  if(!r.text.trim())add('error','empty_document','Не извлечён текст документа');
+  if(pages.length){
+    const empty=pages.filter(p=>!p.text.trim()).map(p=>p.number);
+    const short=pages.filter(p=>p.text.trim()&&p.text.trim().length<40).map(p=>p.number);
+    if(empty.length)add('warning','pages_without_text','Страницы без текстового слоя: '+empty.join(', '));
+    if(short.length)add('info','short_pages','Страницы с малым количеством текста: '+short.join(', '));
+    if(pages.some((p,i)=>p.number!==i+1))add('error','page_order','Нарушен порядок нумерации страниц');
+    if(pages.some(p=>!p.image))add('info','no_page_previews','Снимки страниц отключены или отсутствуют');
+    if(pages.some(p=>/\uFFFD/.test(p.text)))add('warning','replacement_characters','Обнаружены символы замены Unicode');
+    const joined=pages.map(p=>'===== СТРАНИЦА '+p.number+' =====\\n'+p.text).join('\\n\\n');
+    if(joined!==r.text)add('error','page_text_mismatch','Текст страниц не совпадает с общим текстом');
+  }else if(/\uFFFD/.test(r.text))add('warning','replacement_characters','Обнаружены символы замены Unicode');
+  return {status:findings.some(f=>f.severity==='error')?'error':findings.some(f=>f.severity==='warning')?'review':'ok',page_count:pages.length||null,empty_page_count:pages.filter(p=>!p.text.trim()).length,preview_count:pages.filter(p=>!!p.image).length,text_bytes:bytes(r.text),findings,method:'structural-heuristics-v1',limitations:'Не проверяет точность распознавания относительно оригинала; OCR отсутствует'};
+}
+
 function render(){list.replaceChildren();exportBtn.disabled=processing||!records.some(r=>r.ok);if(!records.length){notice.textContent='Добавьте документы для обработки.';return}
 notice.textContent=records.filter(r=>r.ok).length+' из '+records.length+' документов готовы.';
-for(const r of records){const div=document.createElement('div');div.className='item';const info=document.createElement('div'),name=document.createElement('strong'),sub=document.createElement('small');name.textContent=r.name;sub.textContent=r.ok?'Готово · '+bytes(r.text)+' байт UTF-8'+(r.warning?' · '+r.warning:''):'Ошибка: '+r.error;info.append(name,sub);div.append(info);if(r.ok){const b=document.createElement('button');b.textContent='Просмотр';b.onclick=()=>preview.textContent=r.text.slice(0,20000)+(r.text.length>20000?'\n…':'');div.append(b)}list.append(div)}}
+for(const r of records){const div=document.createElement('div');div.className='item';const info=document.createElement('div'),name=document.createElement('strong'),sub=document.createElement('small');name.textContent=r.name;sub.textContent=r.ok?'Готово · '+bytes(r.text)+' байт UTF-8'+(r.warning?' · '+r.warning:''):'Ошибка: '+r.error;info.append(name,sub);div.append(info);if(r.ok){const quality=document.createElement('small');quality.textContent='Контроль качества: '+(r.quality.status==='ok'?'без замечаний':r.quality.findings.map(f=>f.message).join(' · '));info.append(quality);const b=document.createElement('button');b.textContent='Просмотр';b.onclick=()=>preview.textContent=r.text.slice(0,20000)+(r.text.length>20000?'\n…':'');div.append(b)}list.append(div)}}
 async function add(files){
   if(processing)return;
   processing=true;render();
@@ -127,7 +146,7 @@ async function add(files){
         showProgress(5,label+' — чтение');
         const extracted=await extractDocument(file,r.extension,(p,stage)=>showProgress(5+p*0.94,label+' — '+stage));
         if(!extracted.text.trim())throw Error('не удалось извлечь текст');
-        r.text=extracted.text;r.pages=extracted.pages||null;r.sourceFile=file;r.warning=extracted.warning;r.ok=true;
+        r.text=extracted.text;r.pages=extracted.pages||null;r.sourceFile=file;r.warning=extracted.warning;r.quality=assessQuality(r);r.ok=r.quality.status!=='error';if(!r.ok)throw Error('Проверка качества: '+r.quality.findings.filter(f=>f.severity==='error').map(f=>f.message).join('; '));
         showProgress(100,label+' — готово');
       }catch(e){r.error=e.message||String(e);showProgress(100,label+' — ошибка')}
       render();
@@ -192,10 +211,11 @@ function makePdfChunks(record,limit){
 const hex=buf=>[...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
 async function makePackage(){
   const limit=sizeLimit(),ready=records.filter(r=>r.ok);if(!ready.length)throw Error('Нет готовых документов');
-  const files=[],documents=[];
+  const files=[],documents=[],qualityReports=[];
   for(let i=0;i<ready.length;i++){
     const r=ready[i],id='doc-'+String(i+1).padStart(4,'0'),chunks=r.extension==='pdf'?makePdfChunks(r,limit):chunkText(r.text,Math.max(1024,limit-4096)).map(text=>({text,page_start:null,page_end:null,headings:[]}));
     const sha=hex(await crypto.subtle.digest('SHA-256',encoder.encode(r.text)));
+    qualityReports.push({document_id:id,source_name:r.name,...r.quality});
     const parts=[];
     for(let j=0;j<chunks.length;j++){
       const path=id+'/part-'+String(j+1).padStart(5,'0')+'.json';
@@ -228,6 +248,8 @@ async function makePackage(){
       if(p.image_path&&!files.some(f=>f.name===p.image_path))throw Error('Изображение отсутствует в ZIP: '+p.image_path);
     }
   }
+  manifest.quality_report_path='quality-report.json';
+  files.unshift({name:'quality-report.json',content:JSON.stringify({schema:'okto-quality-v1',documents:qualityReports},null,2)});
   files.unshift({name:'manifest.json',content:JSON.stringify(manifest,null,2)});
   return {blob:zipStore(files),parts:files.length-1};
 }
