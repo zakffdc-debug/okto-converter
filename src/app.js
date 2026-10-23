@@ -158,17 +158,21 @@ async function add(files){
 const crcTable=Uint32Array.from({length:256},(_,i)=>{let c=i;for(let k=0;k<8;k++)c=(c>>>1)^((c&1)?0xedb88320:0);return c>>>0});
 function crc32(data){let crc=0xffffffff;for(let i=0;i<data.length;i++)crc=crcTable[(crc^data[i])&255]^(crc>>>8);return (crc^0xffffffff)>>>0}
 const u16=(view,pos,value)=>view.setUint16(pos,value,true),u32=(view,pos,value)=>view.setUint32(pos,value>>>0,true);
-function zipStore(files){
-  // ZIP STORE, no compression; avoids external libraries and network dependencies.
+async function zipStore(files){
+  // Compress only textual metadata losslessly; keep JPEG and PDF bytes untouched.
   const parts=[],central=[];let offset=0;
   for(const f of files){const name=encoder.encode(f.name),data=f.data instanceof Uint8Array?f.data:(f.content instanceof Uint8Array?f.content:encoder.encode(f.content)),crc=crc32(data);
+    let packed=data,method=0;
+    if(f.name.endsWith('.json')&&data.length>256&&typeof CompressionStream!=='undefined'){
+      try{const stream=new Blob([data]).stream().pipeThrough(new CompressionStream('deflate-raw'));const result=new Uint8Array(await new Response(stream).arrayBuffer());if(result.length<data.length){packed=result;method=8}}catch(_){/* Browser fallback: ZIP STORE */}
+    }
     if(name.length>65535||data.length>0xffffffff)throw Error('Слишком большой элемент ZIP');
     const lh=new Uint8Array(30+name.length),lv=new DataView(lh.buffer);
-    u32(lv,0,0x04034b50);u16(lv,4,20);u16(lv,6,0x0800);u16(lv,8,0);u32(lv,14,crc);u32(lv,18,data.length);u32(lv,22,data.length);u16(lv,26,name.length);lh.set(name,30);
-    parts.push(lh,data);
+    u32(lv,0,0x04034b50);u16(lv,4,20);u16(lv,6,0x0800);u16(lv,8,method);u32(lv,14,crc);u32(lv,18,packed.length);u32(lv,22,data.length);u16(lv,26,name.length);lh.set(name,30);
+    parts.push(lh,packed);
     const ch=new Uint8Array(46+name.length),cv=new DataView(ch.buffer);
-    u32(cv,0,0x02014b50);u16(cv,4,20);u16(cv,6,20);u16(cv,8,0x0800);u32(cv,16,crc);u32(cv,20,data.length);u32(cv,24,data.length);u16(cv,28,name.length);u32(cv,42,offset);ch.set(name,46);central.push(ch);
-    offset+=lh.length+data.length;
+    u32(cv,0,0x02014b50);u16(cv,4,20);u16(cv,6,20);u16(cv,8,0x0800);u16(cv,10,method);u32(cv,16,crc);u32(cv,20,packed.length);u32(cv,24,data.length);u16(cv,28,name.length);u32(cv,42,offset);ch.set(name,46);central.push(ch);
+    offset+=lh.length+packed.length;
   }
   if(files.length>65535)throw Error('Слишком много частей для ZIP');
   const centralSize=central.reduce((n,p)=>n+p.length,0);
@@ -257,7 +261,7 @@ async function makePackage(){
   manifest.quality_report_path='quality-report.json';
   files.unshift({name:'quality-report.json',content:JSON.stringify({schema:'okto-quality-v1',documents:qualityReports},null,2)});
   files.unshift({name:'manifest.json',content:JSON.stringify(manifest,null,2)});
-  return {blob:zipStore(files),parts:files.length-1,archiveName:ready.length===1?safeDocumentStem(ready[0].name)+'_split.zip':'OKTO_documents_split.zip'};
+  return {blob:await zipStore(files),parts:files.length-1,archiveName:ready.length===1?safeDocumentStem(ready[0].name)+'_split.zip':'OKTO_documents_split.zip'};
 }
 drop.onclick=()=>input.click();drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();input.click()}};
 input.onchange=()=>{add([...input.files]);input.value=''};
