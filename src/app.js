@@ -31,11 +31,27 @@ function loadScript(url,globalName){
   }));
   return loadedScripts.get(url);
 }
+function decodeDataImage(src){
+  const m=/^data:image\/(png|jpeg|jpg|gif|webp|bmp);base64,([a-z0-9+/=]+)$/i.exec(src||'');
+  if(!m)return null;
+  const binary=atob(m[2]),data=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)data[i]=binary.charCodeAt(i);
+  return {extension:m[1].toLowerCase()==='jpeg'?'jpg':m[1].toLowerCase(),data};
+}
 async function extractDocument(file,extension,progress=()=>{}){
   if(extension==='docx'){
     const mammoth=await loadScript('https://cdn.jsdelivr.net/npm/mammoth@1.9.0/mammoth.browser.min.js','mammoth');
     const result=await mammoth.convertToHtml({arrayBuffer:await file.arrayBuffer()});
     const dom=new DOMParser().parseFromString(result.value,'text/html');
+    const images=[];
+    for(const img of [...dom.querySelectorAll('img')]){
+      const decoded=decodeDataImage(img.getAttribute('src'));
+      if(decoded){
+        const index=images.length+1;
+        images.push({name:'image-'+String(index).padStart(4,'0')+'.'+decoded.extension,data:decoded.data});
+        img.replaceWith(dom.createTextNode(' [ИЗОБРАЖЕНИЕ '+index+'] '));
+      }else img.replaceWith(dom.createTextNode(' [ИЗОБРАЖЕНИЕ: неподдерживаемый формат] '));
+    }
     // Preserve table cells and row boundaries instead of flattening into a single paragraph.
     for(const table of [...dom.querySelectorAll('table')]){
       const rows=[...table.querySelectorAll('tr')].map(tr=>[...tr.children].filter(c=>/^(TD|TH)$/i.test(c.tagName)).map(c=>c.textContent.trim().replace(/\s+/g,' ')).join(' | '));
@@ -45,7 +61,7 @@ async function extractDocument(file,extension,progress=()=>{}){
       if(node.tagName==='BR')node.replaceWith(dom.createTextNode('\n'));
       else node.append(dom.createTextNode('\n'));
     }
-    return {text:dom.body.textContent,warning:'DOCX: изображения и сложные объединения ячеек не экспортируются; проверьте таблицы.'};
+    return {text:dom.body.textContent,images,warning:'DOCX: сохранено изображений: '+images.length+'. Сложные объединения ячеек требуют проверки.'};
   }
   if(extension==='xlsx'){
     const XLSX=await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js','XLSX');
@@ -54,7 +70,15 @@ async function extractDocument(file,extension,progress=()=>{}){
       const sheet=book.Sheets[name],csv=XLSX.utils.sheet_to_csv(sheet,{FS:'\t',RS:'\n',blankrows:true});
       return '===== ЛИСТ: '+name+' =====\n'+csv;
     });
-    return {text:sections.join('\n\n'),warning:'XLSX: экспорт значений ячеек; формулы, форматирование, диаграммы и изображения не сохраняются.'};
+    const JSZip=await loadScript('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js','JSZip');
+    const archive=await JSZip.loadAsync(await file.arrayBuffer()),images=[];
+    const media=Object.keys(archive.files).filter(path=>/^xl\/media\/[^/]+\.(png|jpe?g|gif|webp|bmp)$/i.test(path)).sort();
+    for(const path of media){
+      const extension=path.split('.').pop().toLowerCase();
+      images.push({name:'image-'+String(images.length+1).padStart(4,'0')+'.'+(extension==='jpeg'?'jpg':extension),data:await archive.file(path).async('uint8array')});
+    }
+    const imageNote=images.length?'\n\n[ВЛОЖЕННЫЕ ИЗОБРАЖЕНИЯ XLSX: '+images.length+'. См. media_paths в manifest.json; положение на листе не определено.]':'';
+    return {text:sections.join('\n\n')+imageNote,images,warning:'XLSX: сохранено изображений: '+images.length+'. Положение изображений, диаграммы и форматирование не восстанавливаются.'};
   }
   if(extension==='pdf'){
     const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
@@ -146,7 +170,7 @@ async function add(files){
         showProgress(5,label+' — чтение');
         const extracted=await extractDocument(file,r.extension,(p,stage)=>showProgress(5+p*0.94,label+' — '+stage));
         if(!extracted.text.trim())throw Error('не удалось извлечь текст');
-        r.text=extracted.text;r.pages=extracted.pages||null;r.sourceFile=file;r.warning=extracted.warning;r.quality=assessQuality(r);r.ok=r.quality.status!=='error';if(!r.ok)throw Error('Проверка качества: '+r.quality.findings.filter(f=>f.severity==='error').map(f=>f.message).join('; '));
+        r.text=extracted.text;r.pages=extracted.pages||null;r.images=extracted.images||[];r.sourceFile=file;r.warning=extracted.warning;r.quality=assessQuality(r);r.ok=r.quality.status!=='error';if(!r.ok)throw Error('Проверка качества: '+r.quality.findings.filter(f=>f.severity==='error').map(f=>f.message).join('; '));
         showProgress(100,label+' — готово');
       }catch(e){r.error=e.message||String(e);showProgress(100,label+' — ошибка')}
       render();
@@ -229,10 +253,11 @@ async function makePackage(){
     const parts=[];
     for(let j=0;j<chunks.length;j++){
       const path=folder+'/'+stem+'_part_'+String(j+1).padStart(4,'0')+'.json';
-      const payload={schema:'okto-chunk-v1',document_id:id,source_name:r.name,part_index:j+1,part_count:chunks.length,text:chunks[j].text,page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings,image_paths:chunks[j].page_start&&r.pages.find(p=>p.number===chunks[j].page_start)?.image?[folder+'/pages/page-'+String(chunks[j].page_start).padStart(4,'0')+'.jpg']:[]};
+      const payload={schema:'okto-chunk-v1',document_id:id,source_name:r.name,part_index:j+1,part_count:chunks.length,text:chunks[j].text,page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings,image_paths:chunks[j].page_start&&r.pages.find(p=>p.number===chunks[j].page_start)?.image?[folder+'/pages/page-'+String(chunks[j].page_start).padStart(4,'0')+'.jpg']:r.images?.length?(r.extension==='docx'?r.images.filter((_,k)=>chunks[j].text.includes('[ИЗОБРАЖЕНИЕ '+(k+1)+']')):j===0?r.images:[]).map(img=>folder+'/media/'+img.name):[]};
       const content=JSON.stringify(payload);if(bytes(content)>limit)throw Error('Часть превысила лимит: '+path);
       files.push({name:path,content});parts.push({path,index:j+1,text_bytes:bytes(chunks[j].text),page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings});
     }
+    for(const img of r.images||[])files.push({name:folder+'/media/'+img.name,data:img.data});
     let sourcePath=null;
     
     const pageMap=r.pages?r.pages.map(p=>{
@@ -247,7 +272,7 @@ async function makePackage(){
       if(!expected||actual!==expected)throw Error('Контроль PDF: снимки страниц отсутствуют ('+actual+' из '+expected+'). Перезагрузите страницу и повторите обработку.');
     }
     if(pageMap?.some(p=>!Number.isInteger(p.page)))throw Error('Контроль PDF: неверная нумерация страниц');
-    documents.push({document_id:id,source_name:r.name,source_type:r.extension,extraction_warning:r.warning||null,source_bytes:r.size,source_path:sourcePath,page_map:pageMap,text_bytes:bytes(r.text),text_sha256:sha,part_count:parts.length,parts});
+    documents.push({document_id:id,source_name:r.name,source_type:r.extension,extraction_warning:r.warning||null,source_bytes:r.size,source_path:sourcePath,page_map:pageMap,media_paths:(r.images||[]).map(img=>folder+'/media/'+img.name),text_bytes:bytes(r.text),text_sha256:sha,part_count:parts.length,parts});
   }
   const manifest={schema:'okto-package-v1',created_at:new Date().toISOString(),encoding:'UTF-8',split_strategy:'pdf-page-boundaries-with-line-fallback; other-formats-line-preferred',pdf_pages:'page markers, chunk page metadata, image_paths, page_map',documents};
   for(const doc of documents){
