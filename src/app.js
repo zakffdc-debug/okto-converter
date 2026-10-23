@@ -41,7 +41,9 @@ function decodeDataImage(src){
 async function extractDocument(file,extension,progress=()=>{}){
   if(extension==='docx'){
     const mammoth=await loadScript('https://cdn.jsdelivr.net/npm/mammoth@1.9.0/mammoth.browser.min.js','mammoth');
+    progress(15,'DOCX: извлечение текста и изображений');
     const result=await mammoth.convertToHtml({arrayBuffer:await file.arrayBuffer()});
+    progress(75,'DOCX: обработка структуры документа');
     const dom=new DOMParser().parseFromString(result.value,'text/html');
     const images=[];
     for(const img of [...dom.querySelectorAll('img')]){
@@ -61,15 +63,18 @@ async function extractDocument(file,extension,progress=()=>{}){
       if(node.tagName==='BR')node.replaceWith(dom.createTextNode('\n'));
       else node.append(dom.createTextNode('\n'));
     }
+    progress(95,'DOCX: подготовка данных');
     return {text:dom.body.textContent,images,warning:'DOCX: сохранено изображений: '+images.length+'. Сложные объединения ячеек требуют проверки.'};
   }
   if(extension==='xlsx'){
     const XLSX=await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js','XLSX');
+    progress(15,'XLSX: чтение листов');
     const book=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true});
     const sections=book.SheetNames.map(name=>{
       const sheet=book.Sheets[name],csv=XLSX.utils.sheet_to_csv(sheet,{FS:'\t',RS:'\n',blankrows:true});
       return '===== ЛИСТ: '+name+' =====\n'+csv;
     });
+    progress(50,'XLSX: поиск изображений');
     const JSZip=await loadScript('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js','JSZip');
     const archive=await JSZip.loadAsync(await file.arrayBuffer()),images=[];
     const media=Object.keys(archive.files).filter(path=>/^xl\/media\/[^/]+\.(png|jpe?g|gif|webp|bmp)$/i.test(path)).sort();
@@ -78,6 +83,7 @@ async function extractDocument(file,extension,progress=()=>{}){
       images.push({name:'image-'+String(images.length+1).padStart(4,'0')+'.'+(extension==='jpeg'?'jpg':extension),data:await archive.file(path).async('uint8array')});
     }
     const imageNote=images.length?'\n\n[ВЛОЖЕННЫЕ ИЗОБРАЖЕНИЯ XLSX: '+images.length+'. См. media_paths в manifest.json; положение на листе не определено.]':'';
+    progress(95,'XLSX: подготовка данных');
     return {text:sections.join('\n\n')+imageNote,images,warning:'XLSX: сохранено изображений: '+images.length+'. Положение изображений, диаграммы и форматирование не восстанавливаются.'};
   }
   if(extension==='pdf'){
