@@ -1,7 +1,17 @@
 const $=id=>document.getElementById(id);
 const input=$('files'),drop=$('drop'),list=$('list'),preview=$('preview'),notice=$('notice'),exportBtn=$('export');
 let processing=false;
-function showProgress(percent,label){const area=$('progressArea'),bar=$('progressTrack');area.hidden=false;const n=Math.max(0,Math.min(100,Math.round(percent)));$('progressFill').style.width=n+'%';bar.setAttribute('aria-valuenow',String(n));$('progressText').textContent=label+' — '+n+'%';}
+function showProgress(percent,label){
+  const area=$('progressArea'),bar=$('progressTrack');
+  area.hidden=false;
+  const done=percent>=100;
+  bar.classList.toggle('indeterminate',!done);
+  bar.removeAttribute('aria-valuenow');
+  bar.setAttribute('aria-valuetext',done?'Завершено':'Обрабатывается');
+  $('progressFill').style.width=done?'100%':'28%';
+  $('progressText').textContent=done?(label.includes('ошибка')?'Ошибка обработки':'Обработка завершена'):'Обрабатывается';
+  $('progressText').classList.toggle('working',!done);
+}
 function hideProgress(){ $('progressArea').hidden=true; }
 const encoder=new TextEncoder(),supported=new Set(['txt','md','markdown','csv','json','pdf','docx','xlsx']),records=[];
 const ext=name=>(name.split('.').pop()||'').toLowerCase();
@@ -44,11 +54,7 @@ async function extractDocument(file,extension,progress=()=>{}){
     progress(15,'DOCX: извлечение текста и изображений');
     // Mammoth does not expose granular progress. Show an indeterminate state
     // during its long asynchronous conversion instead of a misleading frozen 19%.
-    $('progressTrack').setAttribute('aria-valuetext','Обработка DOCX, точный процент неизвестен');
-    $('progressTrack').classList.add('indeterminate');
-    let result;
-    try{result=await mammoth.convertToHtml({arrayBuffer:await file.arrayBuffer()});}
-    finally{$('progressTrack').classList.remove('indeterminate');$('progressTrack').removeAttribute('aria-valuetext');}
+    const result=await mammoth.convertToHtml({arrayBuffer:await file.arrayBuffer()});
     progress(75,'DOCX: обработка структуры документа');
     const dom=new DOMParser().parseFromString(result.value,'text/html');
     const images=[];
