@@ -7,7 +7,7 @@ const encoder=new TextEncoder(),supported=new Set(['txt','md','markdown','csv','
 const ext=name=>(name.split('.').pop()||'').toLowerCase();
 const bytes=text=>encoder.encode(text).length;
 const download=(name,blob)=>{const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000)};
-function sizeLimit(){const n=Number($('limit').value);if(!Number.isInteger(n)||n<16||n>8192)throw Error('Размер части должен быть от 16 до 8192 КиБ');return n*1024}
+function sizeLimit(){return 256*1024}
 function chunkText(text,limit){
   // Keep line boundaries when possible. Never split a Unicode code point.
   const chunks=[];let current='',currentSize=0;
@@ -61,7 +61,7 @@ async function extractDocument(file,extension,progress=()=>{}){
     pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
     const doc=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
     const pages=[];let empty=0;
-    const includeImages=$('pageImages').checked;
+    const includeImages=true;
     try{
       for(let i=1;i<=doc.numPages;i++){
         const page=await doc.getPage(i),content=await page.getTextContent();
@@ -234,17 +234,14 @@ async function makePackage(){
       files.push({name:path,content});parts.push({path,index:j+1,text_bytes:bytes(chunks[j].text),page_start:chunks[j].page_start,page_end:chunks[j].page_end,headings:chunks[j].headings});
     }
     let sourcePath=null;
-    if(r.extension==='pdf'&&$('keepSource').checked){
-      sourcePath=folder+'/source.pdf';
-      files.push({name:sourcePath,content:new Uint8Array(await r.sourceFile.arrayBuffer())});
-    }
+    
     const pageMap=r.pages?r.pages.map(p=>{
       const pageNumber=p.number??p.page;
       const imagePath=p.image?folder+'/pages/page-'+String(pageNumber).padStart(4,'0')+'.jpg':null;
       if(p.image)files.push({name:imagePath,data:p.image});
       return {page:pageNumber,marker:'===== СТРАНИЦА '+pageNumber+' =====',text_bytes:bytes(p.text),image_path:imagePath,has_text:!!p.text.trim()};
     }):null;
-    if(r.extension==='pdf'&&$('pageImages').checked){
+    if(r.extension==='pdf'){
       const expected=r.pages?.length||0;
       const actual=pageMap?.filter(p=>p.image_path).length||0;
       if(!expected||actual!==expected)throw Error('Контроль PDF: снимки страниц отсутствуют ('+actual+' из '+expected+'). Перезагрузите страницу и повторите обработку.');
