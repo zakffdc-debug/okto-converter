@@ -158,11 +158,19 @@ function zipStore(files){
 }
 
 function findHeadings(text){
-  return text.split('\n').map(x=>x.trim()).filter(x=>x.length>=5&&x.length<=150&&(
-    /^(?:[1-9]\d*(?:\.\d+)*\.?)\s+\S/.test(x)||
-    /^(?:АННОТАЦИЯ|ВВЕДЕНИЕ|ОГЛАВЛЕНИЕ|ПОДГОТОВКА|ВОЗМОЖНЫЕ ОШИБКИ)\b/iu.test(x)
-  )).slice(0,25);
+  // Conservative detection: exclude numbered instructions, page headers,
+  // dotted table-of-contents entries and long sentences.
+  const excluded=/^(?:step(?:s)?|note|figure|table|contents|before you start|hikrobot idmvs client software user manual)$/i;
+  return text.split('\n').map(x=>x.trim()).filter(x=>{
+    if(x.length<5||x.length>100||excluded.test(x))return false;
+    if(/\.{3,}\s*\d*\s*$/.test(x)||/[.!?:;]\s*$/.test(x))return false;
+    if(/^[1-9]\d*\.\s+/.test(x))return false; // numbered procedure steps
+    if(/^(?:Chapter|Section)\s+\d+\b/i.test(x))return true;
+    if(/^\d+(?:\.\d+)+\s+\S/.test(x))return true; // 6.6.2 Algorithm ROI
+    return /^(?:АННОТАЦИЯ|ВВЕДЕНИЕ|ОГЛАВЛЕНИЕ|ПОДГОТОВКА|ВОЗМОЖНЫЕ ОШИБКИ)$/iu.test(x);
+  }).slice(0,25);
 }
+
 function makePdfChunks(record,limit){
   const units=record.pages.map((p,i)=>({
     page:p.number,
