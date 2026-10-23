@@ -42,7 +42,13 @@ async function extractDocument(file,extension,progress=()=>{}){
   if(extension==='docx'){
     const mammoth=await loadScript('https://cdn.jsdelivr.net/npm/mammoth@1.9.0/mammoth.browser.min.js','mammoth');
     progress(15,'DOCX: извлечение текста и изображений');
-    const result=await mammoth.convertToHtml({arrayBuffer:await file.arrayBuffer()});
+    // Mammoth does not expose granular progress. Show an indeterminate state
+    // during its long asynchronous conversion instead of a misleading frozen 19%.
+    $('progressTrack').setAttribute('aria-valuetext','Обработка DOCX, точный процент неизвестен');
+    $('progressTrack').classList.add('indeterminate');
+    let result;
+    try{result=await mammoth.convertToHtml({arrayBuffer:await file.arrayBuffer()});}
+    finally{$('progressTrack').classList.remove('indeterminate');$('progressTrack').removeAttribute('aria-valuetext');}
     progress(75,'DOCX: обработка структуры документа');
     const dom=new DOMParser().parseFromString(result.value,'text/html');
     const images=[];
