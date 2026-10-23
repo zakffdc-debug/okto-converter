@@ -119,6 +119,7 @@ async function add(files){
       records.push(r);render();
       const label='Файл '+(k+1)+' из '+files.length+': '+file.name;
       showProgress(0,label+' — подготовка');
+      await new Promise(resolve=>setTimeout(resolve,30));
       try{
         if(!supported.has(r.extension))throw Error('формат пока не поддерживается');
         // File reading and parsing are local. For PDF, progress tracks completed pages;
@@ -132,7 +133,7 @@ async function add(files){
       render();
       await new Promise(resolve=>setTimeout(resolve,0));
     }
-  }finally{processing=false;render();if(!files.length)hideProgress()}
+  }finally{processing=false;render();/* Keep the final 100% or error status visible until next upload or clear. */}
 }
 
 function crc32(data){let crc=-1;for(const b of data){crc^=b;for(let k=0;k<8;k++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}return (crc^-1)>>>0}
@@ -226,6 +227,6 @@ drop.onclick=()=>input.click();drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' 
 input.onchange=()=>{add([...input.files]);input.value=''};
 drop.ondragover=e=>{e.preventDefault();drop.classList.add('over')};drop.ondragleave=()=>drop.classList.remove('over');
 drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over');add([...e.dataTransfer.files])};
-$('clear').onclick=()=>{if(processing)return;records.length=0;preview.textContent='Выберите документ.';render()};
-exportBtn.onclick=async()=>{exportBtn.disabled=true;notice.textContent='Формируем ZIP…';try{const {blob,parts}=await makePackage();download('okto-package-'+new Date().toISOString().slice(0,10)+'.zip',blob);notice.textContent='ZIP сформирован: '+parts+' частей. Импорт в бот пока не реализован.'}catch(e){notice.textContent='Ошибка экспорта: '+(e.message||String(e))}finally{exportBtn.disabled=false}};
+$('clear').onclick=()=>{if(processing)return;records.length=0;hideProgress();preview.textContent='Выберите документ.';render()};
+exportBtn.onclick=async()=>{exportBtn.disabled=true;notice.textContent='Формируем ZIP…';showProgress(0,'Упаковка файлов в ZIP');await new Promise(resolve=>setTimeout(resolve,30));try{const {blob,parts}=await makePackage();showProgress(100,'ZIP сформирован');download('okto-package-'+new Date().toISOString().slice(0,10)+'.zip',blob);notice.textContent='ZIP сформирован: '+parts+' частей. Импорт в бот пока не реализован.'}catch(e){notice.textContent='Ошибка экспорта: '+(e.message||String(e));showProgress(100,'Ошибка упаковки ZIP')}finally{exportBtn.disabled=false}};
 render();
