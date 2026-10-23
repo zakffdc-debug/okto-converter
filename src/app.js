@@ -164,7 +164,7 @@ async function zipStore(files){
   for(const f of files){const name=encoder.encode(f.name),data=f.data instanceof Uint8Array?f.data:(f.content instanceof Uint8Array?f.content:encoder.encode(f.content)),crc=crc32(data);
     let packed=data,method=0;
     if(f.name.endsWith('.json')&&data.length>256&&typeof CompressionStream!=='undefined'){
-      try{const stream=new Blob([data]).stream().pipeThrough(new CompressionStream('deflate-raw'));const result=new Uint8Array(await new Response(stream).arrayBuffer());if(result.length<data.length){packed=result;method=8}}catch(_){/* Browser fallback: ZIP STORE */}
+      try{const stream=new Blob([data]).stream().pipeThrough(new CompressionStream('deflate'));const wrapped=new Uint8Array(await new Response(stream).arrayBuffer());const result=wrapped.subarray(2,wrapped.length-4);if(result.length<data.length){packed=result;method=8}}catch(_){/* Browser fallback: ZIP STORE */}
     }
     if(name.length>65535||data.length>0xffffffff)throw Error('Слишком большой элемент ZIP');
     const lh=new Uint8Array(30+name.length),lv=new DataView(lh.buffer);
