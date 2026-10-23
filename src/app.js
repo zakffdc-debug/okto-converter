@@ -120,7 +120,7 @@ function assessQuality(r){
     if(pages.some((p,i)=>p.number!==i+1))add('error','page_order','Нарушен порядок нумерации страниц');
     if(pages.some(p=>!p.image))add('info','no_page_previews','Снимки страниц отключены или отсутствуют');
     if(pages.some(p=>/\uFFFD/.test(p.text)))add('warning','replacement_characters','Обнаружены символы замены Unicode');
-    const joined=pages.map(p=>'===== СТРАНИЦА '+p.number+' =====\\n'+p.text).join('\\n\\n');
+    const joined=pages.map(p=>'===== СТРАНИЦА '+p.number+' =====\n'+p.text).join('\n\n');
     if(joined!==r.text)add('error','page_text_mismatch','Текст страниц не совпадает с общим текстом');
   }else if(/\uFFFD/.test(r.text))add('warning','replacement_characters','Обнаружены символы замены Unicode');
   return {status:findings.some(f=>f.severity==='error')?'error':findings.some(f=>f.severity==='warning')?'review':'ok',page_count:pages.length||null,empty_page_count:pages.filter(p=>!p.text.trim()).length,preview_count:pages.filter(p=>!!p.image).length,text_bytes:bytes(r.text),findings,method:'structural-heuristics-v1',limitations:'Не проверяет точность распознавания относительно оригинала; OCR отсутствует'};
